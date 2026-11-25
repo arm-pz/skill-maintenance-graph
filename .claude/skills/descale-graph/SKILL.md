@@ -51,7 +51,8 @@ For round `r` (starting at 1):
 ## Step 3: Verify node (`descale-verifier`)
 
 1. Start a **new** `descale-verifier` subagent with `round`, `round-<r>/tune-report.json`, and `site/health.json`.
-2. It checks out each repo's `new_head_sha`, runs `check_skill.py` and `regress.py --baseline site/health.json --json` over the family, and runs routing/trigger evals (`caffeinity-skills/scripts/build_evals.py --check`, `run_evals.sh`, or `tools/skill-runs/routing_eval.py`) when configured, writing `round-<r>/verify-report.json`.
+2. In each fixed repo's existing checkout, verify that `git symbolic-ref --short HEAD` returns `descale/<run_id>` and `git rev-parse HEAD` matches its reported `new_head_sha`. Hold the run if either check fails or differs. Leave the checkout on that branch.
+   Run `check_skill.py` and `regress.py --baseline site/health.json --json` over the family, and run routing/trigger evals (`caffeinity-skills/scripts/build_evals.py --check`, `run_evals.sh`, or `tools/skill-runs/routing_eval.py`) when configured, writing `round-<r>/verify-report.json`.
 3. **If `verdict == "fail"`:**
    - If `round < 3`: loop back to Step 2 with `round + 1` and `round-<r>/verify-report.json`.
    - If `round >= 3`: stop the loop, mark `needs-owner`, and run the gate to record the hold.
@@ -71,7 +72,14 @@ Run only when at least one `fixed` entry in `tune-report.json` has `behavior_cha
 
 ## Step 6: Gate node
 
-1. Write `state.json` from the live repo heads, changed files, and issue/PR labels.
+1. Immediately before the gate, refresh the health baseline SHA, rerun the regression check, and read the current issue/PR labels. Record `baseline_sha`, `live_regressions`, and `labels`. For every fixed repository, record the checked-out branch (`branches`), remote default branch (`default_branches`), current commit (`heads`), and changed paths (`files`) in maps keyed by owner/repo. Use empty maps for a clean run with no targets. If evidence collection fails, stop and report the missing evidence. Each fixed repository must be on `descale/<run_id>`. Report the same final repository head for all skills released together.
+   From the root of each fixed repository, fetch its remote default branch and confirm the fetch succeeded. Set `default_branch` to that branch name. Collect the complete outgoing diff against its merge base with the final head:
+
+   ```bash
+   git diff --name-only --no-renames -z "refs/remotes/origin/${default_branch}...HEAD" --
+   ```
+
+   Parse the NUL-delimited output directly into `files[repo]`, preserving each path verbatim. A rename contributes both the deleted and added paths. Stop if the diff fails.
 2. Copy the latest round's `tune-report.json` and `verify-report.json` into the run root and run:
    ```
    python tools/descale-graph/descale_gate.py --run-dir .descale-graph/runs/<run-id> --state .descale-graph/runs/<run-id>/state.json

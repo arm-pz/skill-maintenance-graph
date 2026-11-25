@@ -3,6 +3,7 @@
 import copy
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,8 @@ def good_state(head=TUNED_HEAD):
         "baseline_sha": BASE_SHA,
         "labels": [],
         "heads": {REPO: head},
+        "branches": {REPO: f"descale/{RUN_ID}"},
+        "default_branches": {REPO: "main"},
         "files": {REPO: ["SKILL.md"]},
         "live_regressions": [],
     }
@@ -334,6 +337,115 @@ class DescaleGateTest(unittest.TestCase):
                 self.assertFalse(res["pass"], f"KNOWN_BAD case passed: {name}")
                 self.assertEqual(res["action"], "hold")
                 self.assertTrue(res["reasons"])
+
+    def test_live_evidence_required(self):
+        reports = (good_triage(), good_tune(), good_verify(), None, good_upstream())
+        for field in good_state():
+            for value in ("absent", None, 1):
+                state = good_state()
+                if value == "absent":
+                    del state[field]
+                else:
+                    state[field] = value
+                with self.subTest(field=field, value=value):
+                    self.assertEqual(descale_gate.evaluate(state, *reports)["action"], "hold")
+        for field in ("heads", "branches", "default_branches", "files"):
+            with self.subTest(missing_repo=field):
+                state = with_(good_state(), **{field: {}})
+                self.assertFalse(descale_gate.evaluate(state, *reports)["pass"])
+        for state in (None, {}, with_(good_state(), live_regressions=["new regression"])):
+            self.assertFalse(descale_gate.evaluate(state, *reports)["pass"])
+
+    def test_regression_identity_must_match(self):
+        for changes in ({"id": "R2"}, {"skill": "another"}, {"repo": "arm-pz/another"}):
+            for append in (True, False):
+                tune = good_tune()
+                row = with_(tune["results"][0], **changes)
+                if append:
+                    tune["results"].append(row)
+                else:
+                    tune["results"] = [row]
+                with self.subTest(changes=changes, append=append):
+                    result = descale_gate.evaluate(good_state(), good_triage(), tune, good_verify(), None, good_upstream())
+                    self.assertEqual(result["action"], "hold")
+
+    def test_duplicate_upstream_rows_hold_in_either_order(self):
+        for reverse in (True, False):
+            upstream = good_upstream()
+            upstream["repos"].append(with_(upstream["repos"][0], secret_hits=1))
+            if reverse:
+                upstream["repos"].reverse()
+            result = descale_gate.evaluate(good_state(), good_triage(), good_tune(), good_verify(), None, upstream)
+            self.assertIn("duplicate upstream repository entry", result["reasons"])
+
+    def test_release_branch_is_bound_through_publication(self):
+        for source in ("tune", "release", "upstream", "live", "default"):
+            tune, release, upstream = good_tune(True), good_release(), good_upstream(RELEASE_HEAD)
+            state = good_state(RELEASE_HEAD)
+            if source == "live":
+                state["branches"][REPO] = "other"
+            elif source == "default":
+                state["default_branches"][REPO] = state["branches"][REPO]
+            else:
+                row = {"tune": tune["results"], "release": release["releases"], "upstream": upstream["repos"]}[source][0]
+                row["branch"] = "main"
+            with self.subTest(source=source):
+                result = descale_gate.evaluate(state, good_triage(), tune, good_verify(), release, upstream)
+                self.assertEqual(result["action"], "hold")
+
+    def test_malformed_enum_values_hold(self):
+        for invalid in ([], {}):
+            triage = good_triage()
+            triage["regressions"][0]["kind"] = invalid
+            self.assertEqual(descale_gate.evaluate(good_state(), triage)["action"], "hold")
+            upstream = good_upstream()
+            upstream["repos"][0]["git_verdict"] = invalid
+            result = descale_gate.evaluate(good_state(), good_triage(), good_tune(), good_verify(), None, upstream)
+            self.assertEqual(result["action"], "hold")
+
+    def test_shared_repository_release_requires_one_final_head(self):
+        triage, tune, release = good_triage(), good_tune(True), good_release()
+        triage["target_skills"].append("second")
+        triage["regressions"].append(with_(triage["regressions"][0], skill="second", id="R2"))
+        tune["results"].append(with_(tune["results"][0], skill="second", id="R2"))
+        release["releases"].append(with_(release["releases"][0], skill="second"))
+        reports = (good_state(RELEASE_HEAD), triage, tune, good_verify(), release, good_upstream(RELEASE_HEAD))
+        self.assertTrue(descale_gate.evaluate(*reports)["pass"])
+        release["releases"][0]["head_sha"] = OLD_HEAD
+        self.assertEqual(descale_gate.evaluate(*reports)["action"], "hold")
+
+    def test_protected_rename_before_final_commit_holds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "commit.gpgsign=false", "-c", "user.name=Test",
+                     "-c", "user.email=test@example.org", *args], cwd=root,
+                )
+
+            git("init", "-q", "-b", "main")
+            old = ".claude/notes.md"
+            new = "public notes.md"
+            (root / ".claude").mkdir()
+            (root / old).write_text("example")
+            git("add", old)
+            git("commit", "-qm", "baseline")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            git("switch", "-qc", f"descale/{RUN_ID}")
+            git("mv", old, new)
+            git("commit", "-qm", "move notes")
+            (root / "SKILL.md").write_text("update")
+            git("add", "SKILL.md")
+            git("commit", "-qm", "update skill")
+            paths = git("diff", "--name-only", "--no-renames", "-z",
+                        "refs/remotes/origin/main...HEAD", "--").decode().split("\0")[:-1]
+
+        self.assertCountEqual(paths, [old, new, "SKILL.md"])
+        state = with_(good_state(), files={REPO: paths})
+        result = descale_gate.evaluate(state, good_triage(), good_tune(), good_verify(), None, good_upstream())
+        self.assertEqual(result["action"], "hold")
+        self.assertTrue(any(old in reason for reason in result["reasons"]))
 
     def test_cli_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
