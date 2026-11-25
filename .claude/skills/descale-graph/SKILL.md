@@ -71,7 +71,7 @@ Run only when at least one `fixed` entry in `tune-report.json` has `behavior_cha
 
 ## Step 6: Gate node
 
-1. Write `state.json` from the live repo heads, changed files, and issue/PR labels.
+1. Immediately before the gate, refresh the health baseline SHA, rerun the regression check, and read the current issue/PR labels. Record `baseline_sha`, `live_regressions`, and `labels`. For every fixed repository, record the checked-out branch (`branches`), remote default branch (`default_branches`), current commit (`heads`), and changed paths (`files`) in maps keyed by owner/repo. Use empty maps for a clean run with no targets. If evidence collection fails, stop and report the missing evidence. Each fixed repository must be on `descale/<run_id>`. Report the same final repository head for all skills released together.
 2. Copy the latest round's `tune-report.json` and `verify-report.json` into the run root and run:
    ```
    python tools/descale-graph/descale_gate.py --run-dir .descale-graph/runs/<run-id> --state .descale-graph/runs/<run-id>/state.json

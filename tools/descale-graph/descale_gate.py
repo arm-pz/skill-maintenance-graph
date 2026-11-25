@@ -118,7 +118,7 @@ def check_triage_shape(report):
                 not isinstance(item["repo"], str) or not REPO_NAME.fullmatch(item["repo"])
             ):
                 problems.append(f"triage regression {i} has invalid `repo`")
-            if "kind" in item and item["kind"] not in REGRESSION_KINDS:
+            if "kind" in item and (not isinstance(item["kind"], str) or item["kind"] not in REGRESSION_KINDS):
                 problems.append(f"triage regression {i} has invalid `kind`")
             if "message" in item and not _is_nonempty_str(item["message"]):
                 problems.append(f"triage regression {i} has empty `message`")
@@ -318,7 +318,9 @@ def check_upstream_shape(report):
                 problems.append(f"upstream repo {i} has invalid `branch`")
             if "head_sha" in item and not _is_sha(item["head_sha"]):
                 problems.append(f"upstream repo {i} has invalid `head_sha`")
-            if "git_verdict" in item and item["git_verdict"] not in ALL_GIT_VERDICTS:
+            if "git_verdict" in item and (
+                not isinstance(item["git_verdict"], str) or item["git_verdict"] not in ALL_GIT_VERDICTS
+            ):
                 problems.append(f"upstream repo {i} has invalid `git_verdict`")
             hits = item.get("secret_hits")
             if "secret_hits" in item and (not isinstance(hits, int) or isinstance(hits, bool) or hits < 0):
@@ -376,6 +378,26 @@ def validate_graph(graph, root=None):
     return problems
 
 
+def check_state_shape(state):
+    if not isinstance(state, dict):
+        return ["live state must be an object"]
+    problems = []
+    if not _is_sha(state.get("baseline_sha")):
+        problems.append("live baseline_sha must be a full SHA")
+    for field in ("labels", "live_regressions"):
+        if not _is_str_list(state.get(field)):
+            problems.append(f"live {field} must be a list of strings")
+    for field, valid in (("heads", _is_sha), ("files", _is_str_list),
+                         ("branches", _is_nonempty_str), ("default_branches", _is_nonempty_str)):
+        entries = state.get(field)
+        if not isinstance(entries, dict) or not all(
+            isinstance(repo, str) and REPO_NAME.fullmatch(repo) and valid(value)
+            for repo, value in entries.items()
+        ):
+            problems.append(f"invalid or missing live {field} map")
+    return problems
+
+
 def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None, require_evals=False):
     """Decide pass or hold from plain data so the gate can be tested without GitHub or an agent.
 
@@ -384,12 +406,16 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
       "labels": [str, ...],                     # live labels on the health issue / target PRs
       "heads": {repo: 40-char SHA, ...},        # current head SHA of each touched repo branch
       "files": {repo: [path, ...], ...},        # changed files per touched repo
-      "live_regressions": [str, ...],           # optional current regress.py failures
+      "branches": {repo: str, ...},             # checked-out branch per touched repo
+      "default_branches": {repo: str, ...},     # remote default branch per touched repo
+      "live_regressions": [str, ...],           # current regress.py failures
     }
     Returns {"pass": bool, "action": "clean"|"ready_to_publish"|"hold", "reasons": [...], "summary": {...}}.
     """
-    reasons = []
-    for label in sorted(BLOCKING_LABELS & {str(x).casefold() for x in state.get("labels", [])}):
+    reasons = check_state_shape(state)
+    if reasons:
+        return {"pass": False, "action": "hold", "reasons": reasons, "summary": {}}
+    for label in sorted(BLOCKING_LABELS & {x.casefold() for x in state["labels"]}):
         reasons.append(f"labelled `{label}`")
 
     triage_problems = check_triage_shape(triage)
@@ -397,14 +423,15 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
     if triage_problems:
         return {"pass": False, "action": "hold", "reasons": reasons, "summary": {}}
 
-    if state.get("baseline_sha") and triage["baseline_sha"] != state["baseline_sha"]:
+    if state["live_regressions"]:
+        reasons.append("live regressions exist: " + ", ".join(state["live_regressions"]))
+    if triage["baseline_sha"] != state["baseline_sha"]:
         reasons.append("stale triage: site/health.json baseline changed")
 
     if triage["verdict"] == "clean":
         if triage["regressions"]:
             reasons.append("triage verdict is clean but lists regressions")
-        if state.get("live_regressions"):
-            reasons.append("triage says clean but live regressions exist")
+
         passed = not reasons
         return {
             "pass": passed,
@@ -448,9 +475,16 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
         reasons.append(f"verify round {verify['round']} does not match tune round {tune['round']}")
 
     # Every regression from triage must be accounted for in tune.
-    triage_ids = {r["id"] for r in triage["regressions"]}
+    triage_targets = {r["id"]: (r["skill"], r["repo"]) for r in triage["regressions"]}
+    if len(triage_targets) != len(triage["regressions"]):
+        reasons.append("duplicate triage regression ID")
     tune_by_id = {r["id"]: r for r in tune["results"]}
-    missing_ids = sorted(triage_ids - set(tune_by_id))
+    if len(tune_by_id) != len(tune["results"]):
+        reasons.append("duplicate tune regression ID")
+    for rid, row in tune_by_id.items():
+        if triage_targets.get(rid) != (row["skill"], row["repo"]):
+            reasons.append(f"{rid} does not match a triaged skill and repository")
+    missing_ids = sorted(triage_targets.keys() - tune_by_id.keys())
     if missing_ids:
         reasons.append("regressions missing from tune report: " + ", ".join(missing_ids))
 
@@ -463,6 +497,13 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
     behavior_changed = []
     for r in fixed:
         repo = r["repo"]
+        if r["branch"] != state["branches"].get(repo) or r["branch"] != f"descale/{run_id}":
+            reasons.append(f"{repo} is not on the run's dedicated fix branch")
+        default_branch = state["default_branches"].get(repo)
+        if not default_branch or r["branch"] == default_branch:
+            reasons.append(f"cannot confirm a non-default branch for {repo}")
+        if repo not in state["files"]:
+            reasons.append(f"missing live changed files for {repo}")
         if r["commit"] is None:
             reasons.append(f"{r['id']} marked fixed without a commit")
         if r["new_head_sha"] == r["base_sha"]:
@@ -516,6 +557,12 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
                 if release["verdict"] != "pass":
                     reasons.append("release verdict is fail")
                 rel_by_key = {(e["skill"], e["repo"]): e for e in release["releases"]}
+                if len(rel_by_key) != len(release["releases"]):
+                    reasons.append("duplicate release entry for skill and repository")
+                expected_keys = {(r["skill"], r["repo"]) for r in behavior_changed}
+                if rel_by_key.keys() - expected_keys:
+                    reasons.append("unexpected release entry for a skill outside the release set")
+                release_heads = {}
                 for r in behavior_changed:
                     entry = rel_by_key.get((r["skill"], r["repo"]))
                     if entry is None:
@@ -529,24 +576,31 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
                         reasons.append(f"release for `{r['skill']}` did not update CHANGELOG")
                     if entry["trigger_cases"]["failed"] > 0:
                         reasons.append(f"release for `{r['skill']}` has failed trigger cases")
-                    expected_final_heads[r["repo"]] = entry["head_sha"]
+                    if entry["branch"] != r["branch"]:
+                        reasons.append(f"release branch mismatch for {r['repo']}")
+                    if release_heads.setdefault(r["repo"], entry["head_sha"]) != entry["head_sha"]:
+                        reasons.append(f"conflicting final release heads for {r['repo']}")
+                expected_final_heads.update(release_heads)
 
     # Upstream & live head freshness invariants.
     upstream_by_repo = {u["repo"]: u for u in upstream["repos"]}
+    if len(upstream_by_repo) != len(upstream["repos"]):
+        reasons.append("duplicate upstream repository entry")
     for repo, final_sha in expected_final_heads.items():
         up = upstream_by_repo.get(repo)
         if up is None:
             reasons.append(f"missing upstream check entry for `{repo}`")
             continue
+        if up["branch"] != state["branches"].get(repo):
+            reasons.append(f"upstream branch mismatch for {repo}")
         if up["head_sha"] != final_sha:
             reasons.append(f"stale upstream report for `{repo}`: expected {final_sha[:7]}, saw {up['head_sha'][:7]}")
         if up["git_verdict"] not in OK_GIT_VERDICTS:
             reasons.append(f"`{repo}` git state is `{up['git_verdict']}`")
         if up["secret_hits"] > 0:
             reasons.append(f"`{repo}` has {up['secret_hits']} secret hit(s) in outgoing diff")
-        live_sha = state.get("heads", {}).get(repo)
-        if live_sha is not None and live_sha != final_sha:
-            reasons.append(f"stale run for `{repo}`: live head {live_sha[:7]}, expected {final_sha[:7]}")
+        if state["heads"].get(repo) != final_sha:
+            reasons.append(f"missing or stale live head for {repo}: expected {final_sha[:7]}")
 
     for up in upstream["repos"]:
         if up["git_verdict"] not in OK_GIT_VERDICTS and up["repo"] not in expected_final_heads:
@@ -565,7 +619,7 @@ def evaluate(state, triage, tune=None, verify=None, release=None, upstream=None,
             "fixed": len(fixed),
             "wont_fix": sum(1 for r in tune["results"] if r["status"] == "wont_fix"),
             "escalated": len(escalated),
-            "released": len(release["releases"]) if release and isinstance(release.get("releases"), list) else 0,
+            "released": len(release["releases"]) if isinstance(release, dict) and isinstance(release.get("releases"), list) else 0,
             "repos": sorted(expected_final_heads),
         },
     }

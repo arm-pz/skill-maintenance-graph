@@ -40,6 +40,8 @@ The machine-readable graph specification lives in `tools/descale-graph/graph.jso
 
 ## Running the gate
 
+The gate requires a fresh state snapshot with `baseline_sha`, `labels`, `live_regressions`, and four maps keyed by repository: `heads`, `files`, `branches`, and `default_branches`. Collect these from the live checkouts and remote configuration immediately before evaluating. For clean runs the maps can be empty. Refresh older snapshots before reuse. A release covering multiple skills in one repository must record the final shared commit on the run's dedicated `descale/<run_id>` branch for each skill.
+
 ```sh
 python tools/descale-graph/descale_gate.py \
   --run-dir .descale-graph/runs/<run-id> \
