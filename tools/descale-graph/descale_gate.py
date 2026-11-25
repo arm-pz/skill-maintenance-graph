@@ -637,7 +637,10 @@ def _load_optional(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-dir", required=True, type=Path, help="directory holding node JSON reports")
-    parser.add_argument("--state", required=True, type=Path, help="JSON file describing live state (baseline_sha, labels, heads, files)")
+    parser.add_argument(
+        "--state", required=True, type=Path,
+        help="Live-state JSON with baseline_sha, labels, live_regressions, heads, files, branches, and default_branches",
+    )
     parser.add_argument("--require-evals", action="store_true", help="reject runs where eval_check.status is skipped")
     args = parser.parse_args(argv)
 
