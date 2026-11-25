@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skillsmith.tech/schemas/descale-release-report.schema.json",
+  "title": "Descale release report",
+  "description": "Output of the optional prompts-to-skill-release node when any tuned skill changed behaviour.",
+  "type": "object",
+  "required": ["run_id", "verdict", "releases"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "pattern": "^[0-9]{8}-[0-9]{4}(-[0-9]+)?$"},
+    "verdict": {"enum": ["pass", "fail"]},
+    "releases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "skill",
+          "repo",
+          "branch",
+          "verified_head_sha",
+          "head_sha",
+          "version",
+          "changelog_updated",
+          "trigger_cases",
+          "status",
+          "note"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "skill": {"type": "string", "minLength": 1},
+          "repo": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+          "branch": {"type": "string", "minLength": 1},
+          "verified_head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "version": {"type": "string", "minLength": 1},
+          "changelog_updated": {"type": "boolean"},
+          "trigger_cases": {
+            "type": "object",
+            "required": ["passed", "failed", "reviewed_only"],
+            "additionalProperties": false,
+            "properties": {
+              "passed": {"type": "integer", "minimum": 0},
+              "failed": {"type": "integer", "minimum": 0},
+              "reviewed_only": {"type": "integer", "minimum": 0}
+            }
+          },
+          "status": {"enum": ["ready", "blocked"]},
+          "note": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

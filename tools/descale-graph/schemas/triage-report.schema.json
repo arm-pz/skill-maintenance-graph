@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skillsmith.tech/schemas/descale-triage-report.schema.json",
+  "title": "Descale triage report",
+  "description": "Output of the triage node (health.py / regress.py against site/health.json).",
+  "type": "object",
+  "required": ["run_id", "baseline_sha", "skills_checked", "verdict", "regressions", "target_skills"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "pattern": "^[0-9]{8}-[0-9]{4}(-[0-9]+)?$"},
+    "issue_number": {"type": ["integer", "null"], "minimum": 1},
+    "baseline_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "skills_checked": {"type": "integer", "minimum": 0},
+    "verdict": {"enum": ["clean", "regressions_found"]},
+    "target_skills": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "regressions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "skill", "repo", "kind", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^R[0-9]+$"},
+          "skill": {"type": "string", "minLength": 1},
+          "repo": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+          "kind": {"enum": ["fail", "warn", "note", "dangling", "collision", "missing"]},
+          "message": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}
