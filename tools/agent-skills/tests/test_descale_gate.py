@@ -3,6 +3,7 @@
 import copy
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -412,6 +413,39 @@ class DescaleGateTest(unittest.TestCase):
         self.assertTrue(descale_gate.evaluate(*reports)["pass"])
         release["releases"][0]["head_sha"] = OLD_HEAD
         self.assertEqual(descale_gate.evaluate(*reports)["action"], "hold")
+
+    def test_protected_rename_before_final_commit_holds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "commit.gpgsign=false", "-c", "user.name=Test",
+                     "-c", "user.email=test@example.org", *args], cwd=root,
+                )
+
+            git("init", "-q", "-b", "main")
+            old = ".claude/notes.md"
+            new = "public notes.md"
+            (root / ".claude").mkdir()
+            (root / old).write_text("example")
+            git("add", old)
+            git("commit", "-qm", "baseline")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            git("switch", "-qc", f"descale/{RUN_ID}")
+            git("mv", old, new)
+            git("commit", "-qm", "move notes")
+            (root / "SKILL.md").write_text("update")
+            git("add", "SKILL.md")
+            git("commit", "-qm", "update skill")
+            paths = git("diff", "--name-only", "--no-renames", "-z",
+                        "refs/remotes/origin/main...HEAD", "--").decode().split("\0")[:-1]
+
+        self.assertCountEqual(paths, [old, new, "SKILL.md"])
+        state = with_(good_state(), files={REPO: paths})
+        result = descale_gate.evaluate(state, good_triage(), good_tune(), good_verify(), None, good_upstream())
+        self.assertEqual(result["action"], "hold")
+        self.assertTrue(any(old in reason for reason in result["reasons"]))
 
     def test_cli_exit_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
