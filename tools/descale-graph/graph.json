@@ -1,0 +1,192 @@
+{
+  "$schema": "https://skillsmith.tech/schemas/workflow-graph.schema.json",
+  "id": "descale",
+  "brew": 10,
+  "name": "Descale",
+  "title": "Maintain the skill family",
+  "version": "0.1.0",
+  "description": "Typed, loop-backed, code-gated workflow for keeping the published skill family healthy after release.",
+  "trigger": {
+    "sources": [
+      {
+        "type": "github_issue",
+        "repository": "arm-pz/skills-site",
+        "title": "Skill health: regressions found",
+        "producer": ".github/workflows/health.yml"
+      },
+      {
+        "type": "script",
+        "command": "python tools/agent-skills/health.py --root .",
+        "schedule": "41 3 * * *"
+      },
+      {
+        "type": "manual",
+        "command": "run descale-graph"
+      }
+    ]
+  },
+  "limits": {
+    "max_rounds": 3,
+    "on_round_cap": "needs-owner"
+  },
+  "labels": {
+    "hold": "Allow triage, tune, and verify; hold gate before push/PR",
+    "hands-off": "Skip target and block gate",
+    "needs-owner": "Stop loop, skip target, and block gate until owner clears it"
+  },
+  "protected_paths": [
+    ".github/workflows/",
+    ".claude/",
+    "tools/descale-graph/",
+    "tools/pr-graph/",
+    "site/health.json",
+    "site/deny.json",
+    "CLAUDE.md"
+  ],
+  "nodes": [
+    {
+      "id": "triage",
+      "kind": "script",
+      "runner": "conductor",
+      "uses": ["tools/agent-skills/health.py", "tune-skill:scripts/regress.py"],
+      "inputs": ["site/skills.json", "site/health.json", "open Skill health issue"],
+      "output": {
+        "file": "triage-report.json",
+        "schema": "tools/descale-graph/schemas/triage-report.schema.json"
+      }
+    },
+    {
+      "id": "tune",
+      "kind": "agent",
+      "agent": ".claude/agents/descale-tuner.md",
+      "skill": "tune-skill",
+      "inputs": ["triage-report.json", "verify-report.json (round > 1)", "site/health.json"],
+      "output": {
+        "file": "tune-report.json",
+        "schema": "tools/descale-graph/schemas/tune-report.schema.json"
+      }
+    },
+    {
+      "id": "verify",
+      "kind": "hybrid",
+      "agent": ".claude/agents/descale-verifier.md",
+      "fresh_eyes": true,
+      "uses": [
+        "tune-skill:scripts/check_skill.py",
+        "tune-skill:scripts/regress.py",
+        "caffeinity-skills:scripts/build_evals.py",
+        "caffeinity-skills:scripts/run_evals.sh",
+        "tools/skill-runs/routing_eval.py"
+      ],
+      "inputs": ["tune-report.json", "site/health.json"],
+      "output": {
+        "file": "verify-report.json",
+        "schema": "tools/descale-graph/schemas/verify-report.schema.json"
+      }
+    },
+    {
+      "id": "release",
+      "kind": "agent",
+      "optional": true,
+      "condition": "any(tune.results has behavior_changed == true)",
+      "agent": ".claude/agents/descale-releaser.md",
+      "skill": "prompts-to-skill-release",
+      "inputs": ["tune-report.json", "verify-report.json"],
+      "output": {
+        "file": "release-report.json",
+        "schema": "tools/descale-graph/schemas/release-report.schema.json"
+      }
+    },
+    {
+      "id": "upstream",
+      "kind": "script",
+      "runner": "conductor",
+      "uses": [
+        "upstream-check:scripts/upstream_check.mjs",
+        "upstream-check:scripts/drift_check.mjs"
+      ],
+      "inputs": ["tune-report.json", "release-report.json (if run)"],
+      "output": {
+        "file": "upstream-report.json",
+        "schema": "tools/descale-graph/schemas/upstream-report.schema.json"
+      }
+    },
+    {
+      "id": "gate",
+      "kind": "gate",
+      "script": "tools/descale-graph/descale_gate.py",
+      "inputs": [
+        "triage-report.json",
+        "tune-report.json",
+        "verify-report.json",
+        "release-report.json (when behavior_changed)",
+        "upstream-report.json"
+      ],
+      "exit_codes": {
+        "0": "pass (clean or ready_to_publish)",
+        "1": "hold (deterministic check failed; reasons explain owner action)",
+        "2": "error (broken gate or unreadable inputs; stop run)"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "triage",
+      "to": "gate",
+      "when": "triage.verdict == 'clean'"
+    },
+    {
+      "from": "triage",
+      "to": "tune",
+      "when": "triage.verdict == 'regressions_found'",
+      "set_round": 1
+    },
+    {
+      "from": "tune",
+      "to": "halt_needs_owner",
+      "when": "any(r.status == 'escalate' for r in tune.results)"
+    },
+    {
+      "from": "tune",
+      "to": "verify",
+      "when": "all(r.status != 'escalate' for r in tune.results)"
+    },
+    {
+      "from": "verify",
+      "to": "tune",
+      "when": "verify.verdict == 'fail' and round < limits.max_rounds",
+      "increment_round": 1,
+      "loop_back": true
+    },
+    {
+      "from": "verify",
+      "to": "halt_needs_owner",
+      "when": "verify.verdict == 'fail' and round >= limits.max_rounds"
+    },
+    {
+      "from": "verify",
+      "to": "release",
+      "when": "verify.verdict == 'pass' and any(r.behavior_changed for r in tune.results)"
+    },
+    {
+      "from": "verify",
+      "to": "upstream",
+      "when": "verify.verdict == 'pass' and not any(r.behavior_changed for r in tune.results)"
+    },
+    {
+      "from": "release",
+      "to": "halt_needs_owner",
+      "when": "release.verdict == 'fail'"
+    },
+    {
+      "from": "release",
+      "to": "upstream",
+      "when": "release.verdict == 'pass'"
+    },
+    {
+      "from": "upstream",
+      "to": "gate",
+      "when": "always"
+    }
+  ]
+}

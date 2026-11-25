@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skillsmith.tech/schemas/descale-verify-report.schema.json",
+  "title": "Descale verify report",
+  "description": "Output of the fresh verification node (check_skill.py + regress.py + optional routing/trigger evals).",
+  "type": "object",
+  "required": [
+    "run_id",
+    "round",
+    "baseline_sha",
+    "verified_heads",
+    "regressions_remaining",
+    "new_regressions",
+    "check_skill_failures",
+    "eval_check",
+    "verdict"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "pattern": "^[0-9]{8}-[0-9]{4}(-[0-9]+)?$"},
+    "round": {"type": "integer", "minimum": 1, "maximum": 3},
+    "baseline_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "verified_heads": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+    },
+    "regressions_remaining": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "new_regressions": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "check_skill_failures": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "eval_check": {
+      "type": "object",
+      "required": ["status", "passed", "total", "newly_failing"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"enum": ["pass", "fail", "skipped"]},
+        "passed": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0},
+        "newly_failing": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "reason": {"type": ["string", "null"]}
+      }
+    },
+    "verdict": {"enum": ["pass", "fail"]}
+  }
+}

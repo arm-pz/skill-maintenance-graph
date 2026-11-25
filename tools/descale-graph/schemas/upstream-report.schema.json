@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skillsmith.tech/schemas/descale-upstream-report.schema.json",
+  "title": "Descale upstream report",
+  "description": "Output of the upstream-check node (upstream_check.mjs + drift_check.mjs).",
+  "type": "object",
+  "required": ["run_id", "repos", "drift"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {"type": "string", "pattern": "^[0-9]{8}-[0-9]{4}(-[0-9]+)?$"},
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["repo", "branch", "head_sha", "git_verdict", "secret_hits", "notes"],
+        "additionalProperties": false,
+        "properties": {
+          "repo": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+          "branch": {"type": "string", "minLength": 1},
+          "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "git_verdict": {
+            "enum": [
+              "push-ready",
+              "level",
+              "behind",
+              "diverged",
+              "no-upstream",
+              "no-remote",
+              "unreadable"
+            ]
+          },
+          "secret_hits": {"type": "integer", "minimum": 0},
+          "notes": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "required": ["status", "details"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"enum": ["clean", "drift_detected", "inconclusive"]},
+        "details": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}
