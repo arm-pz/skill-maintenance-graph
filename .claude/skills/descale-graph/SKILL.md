@@ -51,7 +51,8 @@ For round `r` (starting at 1):
 ## Step 3: Verify node (`descale-verifier`)
 
 1. Start a **new** `descale-verifier` subagent with `round`, `round-<r>/tune-report.json`, and `site/health.json`.
-2. It checks out each repo's `new_head_sha`, runs `check_skill.py` and `regress.py --baseline site/health.json --json` over the family, and runs routing/trigger evals (`caffeinity-skills/scripts/build_evals.py --check`, `run_evals.sh`, or `tools/skill-runs/routing_eval.py`) when configured, writing `round-<r>/verify-report.json`.
+2. In each fixed repo's existing checkout, verify that `git symbolic-ref --short HEAD` returns `descale/<run_id>` and `git rev-parse HEAD` matches its reported `new_head_sha`. Hold the run if either check fails or differs. Leave the checkout on that branch.
+   Run `check_skill.py` and `regress.py --baseline site/health.json --json` over the family, and run routing/trigger evals (`caffeinity-skills/scripts/build_evals.py --check`, `run_evals.sh`, or `tools/skill-runs/routing_eval.py`) when configured, writing `round-<r>/verify-report.json`.
 3. **If `verdict == "fail"`:**
    - If `round < 3`: loop back to Step 2 with `round + 1` and `round-<r>/verify-report.json`.
    - If `round >= 3`: stop the loop, mark `needs-owner`, and run the gate to record the hold.
